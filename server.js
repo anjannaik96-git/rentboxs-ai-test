@@ -1,75 +1,57 @@
-// server.js
-require("dotenv").config();
-const express = require("express");
+// server.js  (ESM)
+import express from "express";
+import dotenv from "dotenv";
+import crypto from "crypto";
+
+dotenv.config();
 
 const app = express();
+app.use(express.json());
 
-// Parse JSON safely (Interakt sends application/json)
-app.use(express.json({ limit: "1mb" }));
+// Optional: secret for signature checks (Interakt modal showed "Invest@1%" in your screenshot).
+// For production, set this in Render as an env var INTERAKT_SECRET.
+const INTERAKT_SECRET = process.env.INTERAKT_SECRET || "Invest@1%";
 
-// --- Utilities ---------------------------------------------------------
-
-/**
- * Try to find the user's message text in a variety of likely Interakt payload locations.
- * We’ll log the whole payload so we can adjust once we see the *exact* shape.
- */
-function extractTextFromInterakt(body) {
+// (Optional) Lightweight signature check; non-blocking while testing
+function verifySignature(req, _res, next) {
   try {
-    // Common WhatsApp-like webhook shapes
-    if (body?.messages?.[0]?.text?.body) return body.messages[0].text.body;
-    if (body?.messages?.[0]?.text) return body.messages[0].text;
-    if (body?.message?.text?.body) return body.message.text.body;
-    if (body?.message?.text) return body.message.text;
+    const sig = req.headers["x-interakt-signature"];
+    if (!sig) return next(); // skip during testing
 
-    // Interakt examples (varies by product/flow)
-    if (body?.data?.message) return body.data.message;
-    if (body?.payload?.message) return body.payload.message;
-    if (body?.incoming_message) return body.incoming_message;
-    if (body?.message_text) return body.message_text;
-
-    // Fallbacks that sometimes appear
-    if (typeof body?.message === "string") return body.message;
-    if (typeof body?.text === "string") return body.text;
-
-    return undefined;
-  } catch (e) {
-    return undefined;
+    const payload = JSON.stringify(req.body || {});
+    const hmac = crypto.createHmac("sha256", INTERAKT_SECRET).update(payload).digest("hex");
+    if (hmac !== sig) {
+      console.log("⚠️ Signature mismatch (continuing for testing)");
+    }
+  } catch (err) {
+    console.log("Signature check skipped:", err.message);
   }
+  next();
 }
 
-// --- Routes ------------------------------------------------------------
-
-// Health check
 app.get("/", (_req, res) => {
-  res.type("text").send("✅ Rentboxs AI test server is running");
+  res.send("✅ Rentboxs AI test server is running");
 });
 
-// Interakt webhook
-app.post("/interakt/webhook", async (req, res) => {
-  // 1) Log the *entire* payload so we can see where the message lives
-  console.log("Webhook received:\n", JSON.stringify(req.body, null, 2));
+app.post("/interakt/webhook", verifySignature, async (req, res) => {
+  const text =
+    req.body?.text ||
+    req.body?.message?.text ||
+    req.body?.payload?.text ||
+    "";
 
-  // 2) Try to extract message text
-  const userText = extractTextFromInterakt(req.body);
-  console.log("Extracted userText =", userText);
+  console.log("Incoming message:", text || "undefined");
 
-  // 3) Simple keyword demo (your real logic can go here)
-  let reply;
-  if (!userText) {
-    reply = "Ignored: no message text found in payload.";
-  } else if (/#test\b/i.test(userText)) {
-    reply = "Test received ✅ How can I assist you today?";
-  } else if (/hello|hi|hey/i.test(userText)) {
-    reply = "Hello! 👋 How can I help you?";
-  } else {
-    reply = "Got it! Thanks for your message.";
+  if (!/#test\b/i.test(text)) {
+    console.log("Ignored: no #test keyword found");
+    return res.json({ ok: true }); // acknowledge without reply
   }
 
-  // 4) Return quickly (Interakt generally just needs a 200)
-  res.json({ ok: true, reply });
+  // Test reply
+  return res.json({ ok: true, reply: "Hello! How can I assist you today?" });
 });
 
-// --- Server bind (Render needs PORT) -----------------------------------
+// IMPORTANT for Render – bind to the port they provide
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Running on port", PORT);
