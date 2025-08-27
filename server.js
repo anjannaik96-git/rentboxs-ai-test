@@ -1,53 +1,76 @@
-import express from "express";
-import bodyParser from "body-parser";
-import dotenv from "dotenv";
-import fetch from "node-fetch";
+// server.js
+require("dotenv").config();
+const express = require("express");
 
-dotenv.config();
 const app = express();
-app.use(bodyParser.json());
 
-app.get("/", (req, res) => {
-  res.send("✅ Rentboxs AI test server is running");
-});
+// Parse JSON safely (Interakt sends application/json)
+app.use(express.json({ limit: "1mb" }));
 
-app.post("/interakt/webhook", async (req, res) => {
+// --- Utilities ---------------------------------------------------------
+
+/**
+ * Try to find the user's message text in a variety of likely Interakt payload locations.
+ * We’ll log the whole payload so we can adjust once we see the *exact* shape.
+ */
+function extractTextFromInterakt(body) {
   try {
-    const text = req.body?.text; // adjust this if Interakt sends "message.text"
-    console.log("Incoming message:", text);
+    // Common WhatsApp-like webhook shapes
+    if (body?.messages?.[0]?.text?.body) return body.messages[0].text.body;
+    if (body?.messages?.[0]?.text) return body.messages[0].text;
+    if (body?.message?.text?.body) return body.message.text.body;
+    if (body?.message?.text) return body.message.text;
 
-    // 🔑 TEST FILTER: Only respond if #test is in the message
-    if (!text || !text.includes("#test")) {
-      console.log("Ignored: no #test keyword found");
-      return res.status(200).send({ ok: true, reply: "Ignored - Not a test message" });
-    }
+    // Interakt examples (varies by product/flow)
+    if (body?.data?.message) return body.data.message;
+    if (body?.payload?.message) return body.payload.message;
+    if (body?.incoming_message) return body.incoming_message;
+    if (body?.message_text) return body.message_text;
 
-    // Remove the #test keyword before sending to OpenAI
-    const cleanText = text.replace("#test", "").trim();
+    // Fallbacks that sometimes appear
+    if (typeof body?.message === "string") return body.message;
+    if (typeof body?.text === "string") return body.text;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        messages: [{ role: "user", content: cleanText }]
-      })
-    });
-
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content || "Sorry, I couldn’t generate a reply.";
-
-    res.status(200).send({ ok: true, reply });
-  } catch (err) {
-    console.error("Error in webhook:", err);
-    res.status(500).send({ ok: false, error: err.message });
+    return undefined;
+  } catch (e) {
+    return undefined;
   }
+}
+
+// --- Routes ------------------------------------------------------------
+
+// Health check
+app.get("/", (_req, res) => {
+  res.type("text").send("✅ Rentboxs AI test server is running");
 });
 
-const PORT = process.env.PORT || 8080;
+// Interakt webhook
+app.post("/interakt/webhook", async (req, res) => {
+  // 1) Log the *entire* payload so we can see where the message lives
+  console.log("Webhook received:\n", JSON.stringify(req.body, null, 2));
+
+  // 2) Try to extract message text
+  const userText = extractTextFromInterakt(req.body);
+  console.log("Extracted userText =", userText);
+
+  // 3) Simple keyword demo (your real logic can go here)
+  let reply;
+  if (!userText) {
+    reply = "Ignored: no message text found in payload.";
+  } else if (/#test\b/i.test(userText)) {
+    reply = "Test received ✅ How can I assist you today?";
+  } else if (/hello|hi|hey/i.test(userText)) {
+    reply = "Hello! 👋 How can I help you?";
+  } else {
+    reply = "Got it! Thanks for your message.";
+  }
+
+  // 4) Return quickly (Interakt generally just needs a 200)
+  res.json({ ok: true, reply });
+});
+
+// --- Server bind (Render needs PORT) -----------------------------------
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("🚀 Running on port", PORT);
+  console.log("Running on port", PORT);
 });
